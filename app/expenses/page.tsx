@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { Plus, Pencil, Trash2, Receipt, PiggyBank, ShoppingBag, TrendingDown } from "lucide-react"
+import { Plus, Pencil, Trash2, Receipt, PiggyBank, ShoppingBag, TrendingDown, Filter, X } from "lucide-react"
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts"
 import { db, type Purchase, DEFAULT_EXPENSE_CATEGORIES, normCategory, canonicalizeCategory } from "@/lib/db"
 import { usePurchases, useSettings, updateSettings } from "@/lib/hooks"
@@ -29,6 +29,8 @@ import {
 } from "@/components/ui/table"
 import { toast } from "sonner"
 
+type AmountOp = "" | ">" | "<" | "="
+
 const empty: Omit<Purchase, "id"> = {
   label: "",
   category: "",
@@ -47,6 +49,14 @@ export default function ExpensesPage() {
   // month selector for breakdown + table filter
   const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7))
 
+  // ── filter state ──
+  const [showFilters, setShowFilters] = useState(false)
+  const [filterCategory, setFilterCategory] = useState("")
+  const [filterDateFrom, setFilterDateFrom] = useState("")
+  const [filterDateTo, setFilterDateTo] = useState("")
+  const [filterAmountOp, setFilterAmountOp] = useState<AmountOp>("")
+  const [filterAmountVal, setFilterAmountVal] = useState("")
+
   // derive category options from logged expenses + defaults
   const categoryOptions = useMemo(() => {
     const seen = new Map<string, string>()
@@ -55,7 +65,7 @@ export default function ExpensesPage() {
     return Array.from(seen.values())
   }, [expenses])
 
-  // expenses for the selected month
+  // expenses for the selected month (feeds both the pie and the table)
   const monthExpenses = useMemo(
     () => expenses.filter((e) => e.date.slice(0, 7) === selectedMonth),
     [expenses, selectedMonth],
@@ -65,7 +75,7 @@ export default function ExpensesPage() {
   const monthlySavings = settings.monthlyIncome - monthTotal
   const savingsRate = settings.monthlyIncome > 0 ? (monthlySavings / settings.monthlyIncome) * 100 : 0
 
-  // category breakdown for pie
+  // category breakdown for pie — always uses the full month (unfiltered)
   const categoryBreakdown = useMemo(() => {
     const totals = new Map<string, { name: string; value: number }>()
     for (const e of monthExpenses) {
@@ -78,6 +88,38 @@ export default function ExpensesPage() {
       .filter((t) => t.value > 0)
       .sort((a, b) => b.value - a.value)
   }, [monthExpenses])
+
+  // ── how many filter slots are active ──
+  const activeFilterCount = [
+    filterCategory,
+    filterDateFrom,
+    filterDateTo,
+    filterAmountOp && filterAmountVal ? "x" : "",
+  ].filter(Boolean).length
+
+  // ── table rows after filtering ──
+  const filteredExpenses = useMemo(() => {
+    return monthExpenses.filter((e) => {
+      if (filterCategory && normCategory(e.category) !== normCategory(filterCategory)) return false
+      if (filterDateFrom && e.date < filterDateFrom) return false
+      if (filterDateTo && e.date > filterDateTo) return false
+      if (filterAmountOp && filterAmountVal !== "") {
+        const val = Number(filterAmountVal)
+        if (filterAmountOp === ">" && !(e.amount > val)) return false
+        if (filterAmountOp === "<" && !(e.amount < val)) return false
+        if (filterAmountOp === "=" && e.amount !== val) return false
+      }
+      return true
+    })
+  }, [monthExpenses, filterCategory, filterDateFrom, filterDateTo, filterAmountOp, filterAmountVal])
+
+  function clearFilters() {
+    setFilterCategory("")
+    setFilterDateFrom("")
+    setFilterDateTo("")
+    setFilterAmountOp("")
+    setFilterAmountVal("")
+  }
 
   // --- CRUD ---
   function openAdd() {
@@ -131,7 +173,7 @@ export default function ExpensesPage() {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard
           label="Spent This Month"
-          value={formatINR(monthTotal, { compact: true })}
+          value={formatINR(monthTotal)}
           icon={Receipt}
         />
         <StatCard
@@ -142,7 +184,7 @@ export default function ExpensesPage() {
         />
         <StatCard
           label="Monthly Savings"
-          value={formatINR(monthlySavings, { compact: true })}
+          value={formatINR(monthlySavings)}
           icon={PiggyBank}
           accent={monthlySavings >= 0 ? "text-chart-1" : "text-destructive"}
         />
@@ -154,7 +196,7 @@ export default function ExpensesPage() {
         />
       </div>
 
-      {/* ── Month selector + breakdown + table share the same month ── */}
+      {/* ── Month selector + breakdown ── */}
       <SectionCard
         title="Category Breakdown"
         description="Spending by category for the selected month"
@@ -232,9 +274,113 @@ export default function ExpensesPage() {
       {/* ── Expenses log ── */}
       <SectionCard
         title="Expenses"
-        description={`${monthExpenses.length} entries for this month`}
+        description={
+          activeFilterCount > 0
+            ? `Showing ${filteredExpenses.length} of ${monthExpenses.length} entries`
+            : `${monthExpenses.length} entries for this month`
+        }
         className="mt-6"
+        action={
+          <div className="flex items-center gap-2">
+            {/* Filter toggle */}
+            <Button
+              variant={showFilters ? "secondary" : "outline"}
+              size="sm"
+              onClick={() => setShowFilters((v) => !v)}
+              className="gap-1.5"
+            >
+              <Filter className="size-3.5" />
+              Filter
+              {activeFilterCount > 0 && (
+                <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                  {activeFilterCount}
+                </span>
+              )}
+            </Button>
+            {/* Clear — only visible when something is active */}
+            {activeFilterCount > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearFilters}
+                className="gap-1 text-muted-foreground"
+              >
+                <X className="size-3.5" />
+                Clear
+              </Button>
+            )}
+          </div>
+        }
       >
+        {/* ── Filter panel (collapsible) ── */}
+        {showFilters && (
+          <div className="mb-4 grid grid-cols-1 gap-3 rounded-lg border bg-muted/30 p-4 sm:grid-cols-2 lg:grid-cols-4">
+            {/* Category */}
+            <div className="grid gap-1.5">
+              <Label className="text-xs text-muted-foreground">Category</Label>
+              <Input
+                list="expense-categories"
+                value={filterCategory}
+                onChange={(e) => setFilterCategory(e.target.value)}
+                placeholder="All categories"
+                className="h-8 text-sm"
+              />
+            </div>
+
+            {/* Date from */}
+            <div className="grid gap-1.5">
+              <Label className="text-xs text-muted-foreground">Date from</Label>
+              <Input
+                type="date"
+                value={filterDateFrom}
+                onChange={(e) => setFilterDateFrom(e.target.value)}
+                className="h-8 text-sm"
+              />
+            </div>
+
+            {/* Date to */}
+            <div className="grid gap-1.5">
+              <Label className="text-xs text-muted-foreground">Date to</Label>
+              <Input
+                type="date"
+                value={filterDateTo}
+                onChange={(e) => setFilterDateTo(e.target.value)}
+                className="h-8 text-sm"
+              />
+            </div>
+
+            {/* Amount comparator */}
+            <div className="grid gap-1.5">
+              <Label className="text-xs text-muted-foreground">Amount (₹)</Label>
+              <div className="flex gap-1.5">
+                <select
+                  value={filterAmountOp}
+                  onChange={(e) => {
+                    setFilterAmountOp(e.target.value as AmountOp)
+                    if (!e.target.value) setFilterAmountVal("")
+                  }}
+                  className="h-8 w-16 shrink-0 rounded-md border border-input bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  <option value="">Any</option>
+                  <option value=">">{">"}</option>
+                  <option value="<">{"<"}</option>
+                  <option value="=">{"="}</option>
+                </select>
+                <Input
+                  type="number"
+                  min={0}
+                  value={filterAmountVal}
+                  onChange={(e) => setFilterAmountVal(e.target.value)}
+                  placeholder="0"
+                  disabled={!filterAmountOp}
+                  className="h-8 min-w-0 flex-1 text-sm disabled:opacity-40"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Table ── */}
         <div className="overflow-x-auto">
           <Table>
             <TableHeader>
@@ -247,7 +393,7 @@ export default function ExpensesPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {monthExpenses.map((e) => (
+              {filteredExpenses.map((e) => (
                 <TableRow key={e.id}>
                   <TableCell className="text-muted-foreground">{e.date}</TableCell>
                   <TableCell className="font-medium">{e.label}</TableCell>
@@ -265,10 +411,12 @@ export default function ExpensesPage() {
                   </TableCell>
                 </TableRow>
               ))}
-              {monthExpenses.length === 0 && (
+              {filteredExpenses.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                    No expenses for this month yet.
+                    {monthExpenses.length > 0
+                      ? "No expenses match the current filters."
+                      : "No expenses for this month yet."}
                   </TableCell>
                 </TableRow>
               )}
